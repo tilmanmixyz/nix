@@ -640,6 +640,82 @@ struct GiteaInputScheme : GitArchiveInputScheme
             .applyOverrides(input.getRef(), input.getRev())
             .clone(destDir);
     }
+
+    std::optional<Input> inputFromURL(
+        const fetchers::Settings & settings,
+        const ParsedURL & url, bool requireTree) const override
+    {
+        if (url.scheme != schemeName()) return {};
+
+        auto path = tokenizeString<std::vector<std::string>>(url.path, "/");
+
+        std::optional<Hash> rev;
+        std::optional<std::string> ref;
+        std::optional<std::string> host_url;
+
+        auto size = path.size();
+        if (size == 4) {
+            if (std::regex_match(path[3], revRegex))
+                rev = Hash::parseAny(path[3], HashAlgorithm::SHA1);
+            else if (std::regex_match(path[3], refRegex))
+                ref = path[3];
+            else
+                throw BadURL("in URL '%s', '%s' is not a commit hash or branch/tag name", url.url, path[2]);
+        } else if (size > 4) {
+            std::string rs;
+            for (auto i = std::next(path.begin(), 2); i != path.end(); i++) {
+                rs += *i;
+                if (std::next(i) != path.end()) {
+                    rs += "/";
+                }
+            }
+
+            if (std::regex_match(rs, refRegex)) {
+                ref = rs;
+            } else {
+                throw BadURL("in URL '%s', '%s' is not a branch/tag name", url.url, rs);
+            }
+        } else if (size < 3)
+            throw BadURL("URL '%s' is invalid", url.url);
+
+        for (auto &[name, value] : url.query) {
+            if (name == "rev") {
+                if (rev)
+                    throw BadURL("URL '%s' contains multiple commit hashes", url.url);
+                rev = Hash::parseAny(value, HashAlgorithm::SHA1);
+            }
+            else if (name == "ref") {
+                if (!std::regex_match(value, refRegex))
+                    throw BadURL("URL '%s' contains an invalid branch/tag name", url.url);
+                if (ref)
+                    throw BadURL("URL '%s' contains multiple branch/tag names", url.url);
+                ref = value;
+            }
+            else if (name == "host") {
+                if (!std::regex_match(value, hostRegex))
+                    throw BadURL("URL '%s' contains an invalid instance host", url.url);
+                host_url = value;
+            }
+            // FIXME: barf on unsupported attributes
+        }
+
+        if (ref && rev)
+            throw BadURL("URL '%s' contains both a commit hash and a branch/tag name %s %s", url.url, *ref, rev->gitRev());
+
+        Input input{settings};
+        input.attrs.insert_or_assign("type", std::string { schemeName() });
+        input.attrs.insert_or_assign("owner", path[1]);
+        input.attrs.insert_or_assign("repo", path[2]);
+        if (rev) input.attrs.insert_or_assign("rev", rev->gitRev());
+        if (ref) input.attrs.insert_or_assign("ref", *ref);
+        if (host_url) input.attrs.insert_or_assign("host", *host_url); else input.attrs.insert_or_assign("host", path[0]);
+
+        auto narHash = url.query.find("narHash");
+        if (narHash != url.query.end())
+            input.attrs.insert_or_assign("narHash", narHash->second);
+
+        return input;
+    }
 };
 
 
